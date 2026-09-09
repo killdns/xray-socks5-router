@@ -44,11 +44,14 @@ RUN apk add --no-cache \
       iptables \
       iptables-legacy \
       jq \
+      libcap-utils \
       su-exec \
       tini \
     && addgroup -S socks \
     && adduser -S -D -H -s /sbin/nologin -G socks socks \
-    && install -d -o socks -g socks -m 0700 /run/xray-socks5-router
+    && addgroup -S xray \
+    && adduser -S -D -H -s /sbin/nologin -G xray xray \
+    && install -d -o root -g root -m 0755 /run/xray-socks5-router
 
 COPY --from=xray /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=hev-socks5-build /tmp/hev-socks5-server/bin/hev-socks5-server /usr/local/bin/hev-socks5-server

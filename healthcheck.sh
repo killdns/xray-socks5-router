@@ -9,6 +9,7 @@ TUN_INTERFACE="${TUN_INTERFACE:-xray0}"
 TUN_TABLE="${TUN_TABLE:-100}"
 TUN_PRIORITY="${TUN_PRIORITY:-1000}"
 TUN_SOCKS_PRIORITY="${TUN_SOCKS_PRIORITY:-900}"
+TUN_LOCAL_PRIORITY="${TUN_LOCAL_PRIORITY:-950}"
 ENABLE_SOCKS="${ENABLE_SOCKS:-1}"
 SOCKS_PORT="${SOCKS_PORT:-1080}"
 SOCKS_ROUTE_MARK="${SOCKS_ROUTE_MARK:-0x2/0x2}"
@@ -21,7 +22,10 @@ if [ -r /run/xray-socks5-router/runtime.env ]; then
   . /run/xray-socks5-router/runtime.env
 fi
 
-pidof xray >/dev/null
+xray_pid="$(pidof xray)"
+xray_uid="$(id -u xray)"
+awk -v expected="$xray_uid" \
+  '$1 == "Uid:" { exit($2 == expected ? 0 : 1) }' "/proc/${xray_pid}/status"
 
 case "$ROUTING_MODE" in
   tproxy)
@@ -34,6 +38,8 @@ case "$ROUTING_MODE" in
       grep -F "iif ${INBOUND_INTERFACE} lookup ${TUN_TABLE}" >/dev/null
     ip -4 route show table "$TUN_TABLE" | \
       grep -F "default dev ${TUN_INTERFACE}" >/dev/null
+    ip -4 rule show priority "$TUN_LOCAL_PRIORITY" | \
+      grep -F "not from all uidrange ${xray_uid}-${xray_uid} lookup ${TUN_TABLE}" >/dev/null
     ;;
   *) exit 1 ;;
 esac

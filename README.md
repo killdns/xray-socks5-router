@@ -47,6 +47,12 @@ xray0 (Xray TUN inbound)
         v
 Xray outbound from config.json
 
+container-local process except Xray
+        |
+        | inverted Xray-UID rule -> table 100
+        v
+xray0 -> Xray outbound
+
 SOCKS5 client -> HevSocks5Server :1080
         |
         | process-UID policy rule -> table 200
@@ -54,8 +60,10 @@ SOCKS5 client -> HevSocks5Server :1080
 xray0 -> Xray outbound
 ```
 
-Xray's own upstream sockets keep using the normal main routing table. This
-prevents the proxy connection from being routed back into its own TUN interface.
+Xray runs under a dedicated UID with only the ambient `CAP_NET_ADMIN` capability.
+All other container-local traffic uses the TUN policy table. Xray's own upstream
+sockets keep using `main`, preventing the proxy connection from being routed
+back into its own TUN interface.
 
 ### TPROXY SOCKS path
 
@@ -144,7 +152,7 @@ For TUN mode, add the TUN device and select the mode:
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.0
+    image: killdns/xray-socks5-router:0.2.1
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -211,6 +219,7 @@ SOCKS clients, and return traffic remain reachable.
 | `TUN_TABLE` | `100` | Policy table for routed L3 traffic |
 | `TUN_PRIORITY` | `1000` | Inbound-interface rule priority; must be greater than 200 for RouterOS |
 | `TUN_SOCKS_PRIORITY` | `900` | Hev process-UID rule priority; must be greater than 200 |
+| `TUN_LOCAL_PRIORITY` | `950` | Rule routing container-local traffic except Xray through TUN |
 | `TUN_WAIT_SECONDS` | `15` | Time to wait for Xray to create the TUN interface |
 
 ### TPROXY mode
@@ -253,11 +262,12 @@ Build every supported architecture:
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64,linux/arm/v7 \
-  -t killdns/xray-socks5-router:0.2.0 \
+  -t killdns/xray-socks5-router:0.2.1 \
   .
 ```
 
-The smoke test verifies TPROXY and TUN L3 TCP/UDP plus SOCKS5 TCP/UDP.
+The smoke test verifies container-local TUN traffic, L3 TCP/UDP, and SOCKS5
+TCP/UDP in both routing modes.
 
 ## Security and limitations
 

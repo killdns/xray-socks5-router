@@ -34,6 +34,12 @@ Docker network через Xray.
         v
 xray0 (Xray TUN inbound) -> Xray outbound
 
+локальный процесс контейнера, кроме Xray
+        |
+        | инвертированное правило UID Xray -> таблица 100
+        v
+xray0 -> Xray outbound
+
 SOCKS5-клиент -> HevSocks5Server :1080
         |
         | правило по UID процесса -> таблица 200
@@ -41,8 +47,9 @@ SOCKS5-клиент -> HevSocks5Server :1080
 xray0 -> Xray outbound
 ```
 
-Собственные соединения Xray остаются в таблице `main`, поэтому подключение к
-серверу не зацикливается в `xray0`.
+Xray работает под отдельным UID и получает только ambient capability
+`CAP_NET_ADMIN`. Весь остальной локальный трафик контейнера идёт через TUN, а
+собственные upstream-соединения Xray остаются в `main` и не зацикливаются.
 
 ### TPROXY
 
@@ -104,7 +111,7 @@ TUN-конфиг используется как есть; имя его инт�
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.0
+    image: killdns/xray-socks5-router:0.2.1
     cap_add: [NET_ADMIN, NET_RAW]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -154,6 +161,7 @@ Entrypoint считает интерфейс исходного default route в
 | `TUN_TABLE` | `100` | Policy table L3-трафика |
 | `TUN_PRIORITY` | `1000` | Приоритет правила входного интерфейса; на RouterOS больше 200 |
 | `TUN_SOCKS_PRIORITY` | `900` | Приоритет правила UID Hev; на RouterOS больше 200 |
+| `TUN_LOCAL_PRIORITY` | `950` | Правило локального трафика контейнера, кроме Xray |
 | `TUN_WAIT_SECONDS` | `15` | Ожидание создания TUN-интерфейса |
 
 ### TPROXY
@@ -188,10 +196,11 @@ docker build -t xray-socks5-router:test .
 ./tests/smoke.sh
 docker buildx build \
   --platform linux/amd64,linux/arm64,linux/arm/v7 \
-  -t killdns/xray-socks5-router:0.2.0 .
+  -t killdns/xray-socks5-router:0.2.1 .
 ```
 
-Smoke test проверяет L3 TCP/UDP и SOCKS5 TCP/UDP в обоих режимах.
+Smoke test проверяет локальный TUN-трафик контейнера, L3 TCP/UDP и SOCKS5
+TCP/UDP в обоих режимах.
 
 - Монтируйте конфиг Xray только для чтения.
 - Не публикуйте SOCKS без авторизации в недоверенную сеть.

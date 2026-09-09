@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1 - 2026-09-09
+
+- Routed container-local IPv4 traffic through Xray in TUN mode while excluding
+  only Xray's own upstream sockets to prevent a routing loop.
+- Ran Xray under a dedicated unprivileged UID with only the ambient
+  `CAP_NET_ADMIN` capability required to create and manage its TUN interface.
+- Added a regression test that verifies container-local traffic enters Xray TUN.
+
 ## 0.2.0 - 2026-09-09
 
 - Added a RouterOS-compatible native TUN routing mode that does not require the

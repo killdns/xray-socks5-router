@@ -50,6 +50,7 @@ TUN_MTU="${TUN_MTU:-1400}"
 TUN_TABLE="${TUN_TABLE:-100}"
 TUN_PRIORITY="${TUN_PRIORITY:-1000}"
 TUN_SOCKS_PRIORITY="${TUN_SOCKS_PRIORITY:-900}"
+TUN_LOCAL_PRIORITY="${TUN_LOCAL_PRIORITY:-950}"
 TUN_WAIT_SECONDS="${TUN_WAIT_SECONDS:-15}"
 
 ENABLE_SOCKS="${ENABLE_SOCKS:-1}"
@@ -102,6 +103,7 @@ is_uint "$TUN_TABLE" || fail "TUN_TABLE must be numeric"
 is_uint "$TUN_MTU" || fail "TUN_MTU must be numeric"
 is_uint "$TUN_PRIORITY" || fail "TUN_PRIORITY must be numeric"
 is_uint "$TUN_SOCKS_PRIORITY" || fail "TUN_SOCKS_PRIORITY must be numeric"
+is_uint "$TUN_LOCAL_PRIORITY" || fail "TUN_LOCAL_PRIORITY must be numeric"
 is_uint "$TUN_WAIT_SECONDS" || fail "TUN_WAIT_SECONDS must be numeric"
 
 if [ "$TUN_TABLE" -le 0 ] || [ "$TUN_TABLE" -ge 253 ]; then
@@ -114,7 +116,12 @@ fi
   fail "TUN_PRIORITY must be greater than 200 for RouterOS compatibility"
 [ "$TUN_SOCKS_PRIORITY" -gt 200 ] || \
   fail "TUN_SOCKS_PRIORITY must be greater than 200 for RouterOS compatibility"
+[ "$TUN_LOCAL_PRIORITY" -gt 200 ] || \
+  fail "TUN_LOCAL_PRIORITY must be greater than 200 for RouterOS compatibility"
 [ "$TUN_WAIT_SECONDS" -gt 0 ] || fail "TUN_WAIT_SECONDS must be positive"
+if [ "$ROUTING_MODE" = "tun" ] && [ "$TUN_LOCAL_PRIORITY" = "$TUN_PRIORITY" ]; then
+  fail "TUN_LOCAL_PRIORITY must differ from TUN_PRIORITY"
+fi
 
 case "$ENABLE_SOCKS" in
   0|1) ;;
@@ -135,6 +142,8 @@ if [ "$ENABLE_SOCKS" = "1" ]; then
       fail "SOCKS_ROUTE_TABLE must differ from TUN_TABLE in TUN mode"
     [ "$TUN_SOCKS_PRIORITY" != "$TUN_PRIORITY" ] || \
       fail "TUN_SOCKS_PRIORITY must differ from TUN_PRIORITY"
+    [ "$TUN_SOCKS_PRIORITY" != "$TUN_LOCAL_PRIORITY" ] || \
+      fail "TUN_SOCKS_PRIORITY must differ from TUN_LOCAL_PRIORITY"
   fi
 
   if [ "$SOCKS_PORT" -lt 1024 ] || [ "$SOCKS_PORT" -gt 65535 ]; then
@@ -206,6 +215,12 @@ prepare_xray_config() {
 prepare_xray_config
 /usr/local/bin/xray run -test -config "$XRAY_CONFIG"
 
+xray_runtime_config=/run/xray-socks5-router/xray-runtime.json
+cp "$XRAY_CONFIG" "$xray_runtime_config"
+chown xray:xray "$xray_runtime_config"
+chmod 0600 "$xray_runtime_config"
+XRAY_CONFIG="$xray_runtime_config"
+
 detected_default="$(ip -4 route show default | awk 'NR == 1 { print; exit }')"
 detected_default_interface="$(printf '%s\n' "$detected_default" | awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
 detected_default_gateway="$(printf '%s\n' "$detected_default" | awk '{ for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit } }')"
@@ -266,6 +281,7 @@ umask 077
   printf 'TUN_TABLE=%s\n' "$TUN_TABLE"
   printf 'TUN_PRIORITY=%s\n' "$TUN_PRIORITY"
   printf 'TUN_SOCKS_PRIORITY=%s\n' "$TUN_SOCKS_PRIORITY"
+  printf 'TUN_LOCAL_PRIORITY=%s\n' "$TUN_LOCAL_PRIORITY"
 } > /run/xray-socks5-router/runtime.env
 
 while ip -4 route del default 2>/dev/null; do :; done
@@ -283,6 +299,7 @@ IFS="$old_ifs"
 if [ "$ROUTING_MODE" = "tproxy" ]; then
   while ip -4 rule del priority "$TUN_PRIORITY" 2>/dev/null; do :; done
   while ip -4 rule del priority "$TUN_SOCKS_PRIORITY" 2>/dev/null; do :; done
+  while ip -4 rule del priority "$TUN_LOCAL_PRIORITY" 2>/dev/null; do :; done
   ip -4 route flush table "$TUN_TABLE" >/dev/null 2>&1 || true
   if [ "$SOCKS_ROUTE_TABLE" != "$TUN_TABLE" ]; then
     ip -4 route flush table "$SOCKS_ROUTE_TABLE" >/dev/null 2>&1 || true
@@ -486,6 +503,11 @@ setup_tun_routing() {
   while ip -4 rule del priority "$TUN_PRIORITY" 2>/dev/null; do :; done
   ip -4 rule add priority "$TUN_PRIORITY" \
     iif "$INBOUND_INTERFACE" table "$TUN_TABLE"
+
+  xray_uid="$(id -u xray)"
+  while ip -4 rule del priority "$TUN_LOCAL_PRIORITY" 2>/dev/null; do :; done
+  ip -4 rule add priority "$TUN_LOCAL_PRIORITY" \
+    not uidrange "${xray_uid}-${xray_uid}" table "$TUN_TABLE"
 }
 
 setup_tun_socks_injection() {
@@ -506,7 +528,15 @@ cleanup() {
 
 trap cleanup EXIT INT TERM HUP
 
-/usr/local/bin/xray run -config "$XRAY_CONFIG" &
+# The inner shell expands its positional parameter, not this entrypoint shell.
+# shellcheck disable=SC2016
+capsh \
+  --keep=1 \
+  --user=xray \
+  --inh=cap_net_admin \
+  --addamb=cap_net_admin \
+  --shell=/bin/sh \
+  -- -c 'exec /usr/local/bin/xray run -config "$1"' sh "$XRAY_CONFIG" &
 XRAY_PID="$!"
 printf '%s\n' "$XRAY_PID" > /run/xray-socks5-router/xray.pid
 sleep 1

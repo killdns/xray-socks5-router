@@ -19,6 +19,7 @@ esac
 cd "$ROOT_DIR"
 
 IMAGE="${IMAGE:-xray-socks5-router:test}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 KEEP_ON_FAILURE="${KEEP_ON_FAILURE:-0}"
 INBOUND_NETWORK="xray-socks5-router-smoke-in"
 OUTBOUND_NETWORK="xray-socks5-router-smoke-out"
@@ -52,7 +53,9 @@ finish() {
 trap finish EXIT INT TERM HUP
 cleanup
 
-docker build --pull --tag "$IMAGE" .
+if [ "$SKIP_BUILD" != "1" ]; then
+  docker build --pull --tag "$IMAGE" .
+fi
 docker run --rm --entrypoint sh "$IMAGE" -c \
   'xray version && test -x /usr/local/bin/hev-socks5-server'
 docker run --rm \
@@ -224,6 +227,18 @@ until [ "$(docker inspect --format '{{.State.Health.Status}}' "$ROUTER")" = "hea
   sleep 1
 done
 
+local_tun_packets_before="$(docker exec "$ROUTER" \
+  cat /sys/class/net/xray0/statistics/rx_packets)"
+local_tun_result="$(docker exec "$ROUTER" \
+  wget -T 10 -qO- http://198.51.100.20:8080/)"
+local_tun_packets_after="$(docker exec "$ROUTER" \
+  cat /sys/class/net/xray0/statistics/rx_packets)"
+[ "$local_tun_result" = "xray-socks5-router-smoke" ]
+[ "$local_tun_packets_after" -gt "$local_tun_packets_before" ] || {
+  printf '%s\n' "Container-local traffic did not enter Xray TUN" >&2
+  exit 1
+}
+
 tun_packets_before="$(docker exec "$ROUTER" \
   cat /sys/class/net/xray0/statistics/rx_packets)"
 
@@ -288,4 +303,5 @@ tun_packets_after="$(docker exec "$ROUTER" \
   exit 1
 }
 
-printf '%s\n' "TPROXY and TUN L3 TCP/UDP plus SOCKS5 TCP/UDP smoke tests passed"
+printf '%s\n' \
+  "TPROXY and TUN local/L3 TCP/UDP plus SOCKS5 TCP/UDP smoke tests passed"

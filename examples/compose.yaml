@@ -2,7 +2,7 @@ name: xray-socks5-router
 
 services:
   gateway:
-    image: ${IMAGE:-killdns/xray-socks5-router}:${VERSION:-0.2.0}
+    image: ${IMAGE:-killdns/xray-socks5-router}:${VERSION:-0.2.1}
     # Use this instead of image while developing locally:
     # build: ..
     container_name: xray-socks5-router

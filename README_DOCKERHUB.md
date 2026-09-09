@@ -31,12 +31,22 @@ routed client/network
         v
 xray0 (Xray TUN inbound) -> Xray outbound
 
+container-local process except Xray
+        |
+        | inverted Xray-UID rule -> table 100
+        v
+xray0 -> Xray outbound
+
 SOCKS5 client -> HevSocks5Server :1080
         |
         | process-UID policy rule -> table 200
         v
 xray0 -> Xray outbound
 ```
+
+Xray runs under a dedicated UID with only ambient `CAP_NET_ADMIN`. All other
+container-local traffic enters TUN, while Xray's own upstream sockets keep using
+the main table to avoid a loop.
 
 In `tproxy` mode, SOCKS traffic instead re-enters Xray through an internal
 VRF/veth loop and the TPROXY inbound. That loop is not a VLAN or Docker network,
@@ -45,7 +55,7 @@ and TUN mode does not create it.
 ## Quick start
 
 ```bash
-docker pull killdns/xray-socks5-router:0.2.0
+docker pull killdns/xray-socks5-router:0.2.1
 ```
 
 TUN example:
@@ -53,7 +63,7 @@ TUN example:
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.0
+    image: killdns/xray-socks5-router:0.2.1
     cap_add: [NET_ADMIN, NET_RAW]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -108,6 +118,7 @@ Never commit the URI or generated configuration.
 | `TUN_TABLE` | `100` | Policy table for routed traffic |
 | `TUN_PRIORITY` | `1000` | Inbound-interface rule priority; above 200 on RouterOS |
 | `TUN_SOCKS_PRIORITY` | `900` | Hev UID rule priority; above 200 on RouterOS |
+| `TUN_LOCAL_PRIORITY` | `950` | Route container-local traffic except Xray through TUN |
 | `TPROXY_PORT` | `12345` | TPROXY inbound port |
 | `TPROXY_MARK` | `0x1/0x1` | TPROXY packet mark |
 | `ENABLE_SOCKS` | `1` | Start HevSocks5Server |
