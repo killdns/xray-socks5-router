@@ -39,6 +39,48 @@ class BuildConfigTests(unittest.TestCase):
         self.assertEqual(outbound["settings"]["packetEncoding"], "xudp")
         self.assertEqual(config["inbounds"][0]["port"], 12345)
 
+    def test_tun_mode_generates_native_l3_inbound(self):
+        config = MODULE.build_config(
+            "vless://b0dd64e4-0fbd-4038-9139-d1f32a68a0dc@example.com:443",
+            routing_mode="tun",
+            tun_interface="xray0",
+            tun_mtu=1400,
+            tun_gateway="198.18.0.1/30",
+        )
+
+        inbound = config["inbounds"][0]
+        self.assertEqual(inbound["tag"], "tun-in")
+        self.assertEqual(inbound["protocol"], "tun")
+        self.assertEqual(
+            inbound["settings"],
+            {
+                "name": "xray0",
+                "mtu": 1400,
+                "gateway": ["198.18.0.1/30"],
+            },
+        )
+        self.assertNotIn("listen", inbound)
+        self.assertNotIn("port", inbound)
+        self.assertNotIn("streamSettings", inbound)
+        self.assertEqual(
+            config["routing"]["rules"][0]["inboundTag"], ["tun-in"]
+        )
+
+    def test_unknown_routing_mode_is_rejected(self):
+        with self.assertRaisesRegex(MODULE.ConfigError, "routing mode"):
+            MODULE.build_config(
+                "vless://b0dd64e4-0fbd-4038-9139-d1f32a68a0dc@example.com:443",
+                routing_mode="magic",
+            )
+
+    def test_tun_gateway_must_be_ipv4_prefix(self):
+        with self.assertRaisesRegex(MODULE.ConfigError, "TUN gateway"):
+            MODULE.build_config(
+                "vless://b0dd64e4-0fbd-4038-9139-d1f32a68a0dc@example.com:443",
+                routing_mode="tun",
+                tun_gateway="2001:db8::1/64",
+            )
+
     def test_tls_websocket(self):
         config = MODULE.build_config(
             "vless://b0dd64e4-0fbd-4038-9139-d1f32a68a0dc@example.com:8443"

@@ -43,6 +43,7 @@ RUN apk add --no-cache \
       iproute2 \
       iptables \
       iptables-legacy \
+      jq \
       su-exec \
       tini \
     && addgroup -S socks \

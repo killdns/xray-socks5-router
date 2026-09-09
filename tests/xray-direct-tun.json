@@ -1,0 +1,36 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "protocol": "tun",
+      "settings": {
+        "name": "xray0",
+        "mtu": 1400,
+        "gateway": [
+          "198.18.0.1/30"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "tun-in"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}

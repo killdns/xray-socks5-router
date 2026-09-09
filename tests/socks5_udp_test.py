@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ipaddress
+import os
 import socket
 import struct
 import sys
@@ -29,10 +30,10 @@ def read_address(sock: socket.socket, atyp: int) -> str:
 
 
 def main() -> int:
-    proxy_host = "127.0.0.1"
-    proxy_port = 11080
-    target_ip = "198.51.100.20"
-    target_port = 9999
+    proxy_host = os.environ.get("SOCKS_HOST", "127.0.0.1")
+    proxy_port = int(os.environ.get("SOCKS_PORT", "11080"))
+    target_ip = os.environ.get("SOCKS_TARGET_IP", "198.51.100.20")
+    target_port = int(os.environ.get("SOCKS_TARGET_PORT", "9999"))
     payload = b"xray-socks5-router-udp-smoke"
 
     with socket.create_connection((proxy_host, proxy_port), timeout=10) as control:

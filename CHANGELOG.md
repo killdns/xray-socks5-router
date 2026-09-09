@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0 - 2026-09-09
+
+- Added a RouterOS-compatible native TUN routing mode that does not require the
+  netfilter TPROXY target.
+- Added automatic, ephemeral conversion of an existing TPROXY `dokodemo-door`
+  inbound when `ROUTING_MODE=tun` is selected.
+- Added native TUN output to the VLESS configuration generator.
+- Added dual-mode L3 TCP/UDP and SOCKS5 TCP/UDP integration coverage.
+- Kept multi-platform builds for `linux/amd64`, `linux/arm64`, and
+  `linux/arm/v7`.
+
 ## 0.1.0 - 2026-09-09
 
 - Added an L3 gateway for routed TCP, UDP, and DNS traffic through Xray.

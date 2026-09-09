@@ -1,252 +1,276 @@
 # Xray SOCKS5 Router
 
-[Русский](README_RU.md) ·
 [Docker Hub](https://hub.docker.com/r/killdns/xray-socks5-router) ·
+[Русская документация](README_RU.md) ·
 [Docker Hub README](README_DOCKERHUB.md)
 
-A multi-platform Docker image that acts as an L3 gateway for routed TCP, UDP,
-and DNS traffic through Xray. It also provides a SOCKS5 frontend powered by
-[HevSocks5Server](https://github.com/heiher/hev-socks5-server).
+A multi-platform Docker image that provides two independent entry points to an
+Xray outbound:
+
+- an L3 gateway for routed IPv4 traffic;
+- a HevSocks5Server frontend with TCP `CONNECT` and UDP `ASSOCIATE`.
 
 Supported platforms:
 
-- `linux/amd64` — x86-64;
-- `linux/arm64` — ARM64/AArch64;
-- `linux/arm/v7` — 32-bit ARMv7.
+- `linux/amd64` — x86_64;
+- `linux/arm64` — AArch64;
+- `linux/arm/v7` — 32-bit ARMv7, including RouterOS containers on compatible
+  MikroTik devices.
 
-## What makes it an L3 gateway
+## Routing modes
 
-In gateway mode, the container receives IP packets on its inbound interface and
-routes TCP and UDP flows through Xray. An upstream router uses the container IP
-as the next hop for selected client networks or policy-routing tables.
+| Mode | Use it on | Kernel requirement | Routed traffic |
+|---|---|---|---|
+| `tproxy` | Ordinary Linux Docker hosts | working iptables/nftables TPROXY | TCP and UDP |
+| `tun` | RouterOS containers and Linux hosts | `/dev/net/tun`, `NET_ADMIN`, policy routing | TCP, UDP, and Xray TUN ICMP echo behavior |
 
-This is not an L2 bridge. It does not carry Ethernet frames, extend a broadcast
-domain, or bridge Docker networks. Xray TPROXY handles TCP and UDP, so
-ICMP and other IP protocols are not proxied; `ping` is not a valid gateway test.
-DNS is carried as TCP or UDP traffic.
+`tproxy` remains the default for backward compatibility. `tun` does not use
+iptables or nftables for interception, so it works on RouterOS kernels that do
+not expose the TPROXY target to containers.
 
-SOCKS5 is an additional application-level entry point. Connections created by
-HevSocks5Server are forced back into the same L3 Xray path instead of escaping
-through the regular underlay route.
+This is an L3 router, not an Ethernet bridge. Clients must route selected IP
+traffic to the container address. The image does not extend a VLAN, broadcast
+domain, or Docker network across the Xray connection.
 
-## Why this image exists
-
-The upstream Xray image contains Xray itself, but not the networking setup
-required for a transit gateway. This project adds:
-
-- transparent TCP and UDP interception with TPROXY;
-- bypass for services listening on the container's own addresses;
-- policy routing and NAT;
-- HevSocks5Server with `CONNECT` and `UDP ASSOCIATE`;
-- forced injection of Hev outbound traffic into Xray;
-- health checks and coordinated process shutdown;
-- builds for three CPU architectures.
-
-## SOCKS traffic path
+### TUN traffic path
 
 ```text
-SOCKS client
-    |
-    v
-HevSocks5Server :1080
-    |
-    | UID mark 0x2 + policy table 200
-    v
-VRF socksvrf -> veth hevout <-> hevin
-    |
-    | TPROXY mark 0x1 + policy table 100
-    v
-Xray dokodemo-door :12345
-    |
-    v
-VLESS/REALITY or another outbound from config.json
+routed client/network
+        |
+        v
+container inbound interface
+        |
+        | iif policy rule -> table 100
+        v
+xray0 (Xray TUN inbound)
+        |
+        v
+Xray outbound from config.json
+
+SOCKS5 client -> HevSocks5Server :1080
+        |
+        | process-UID policy rule -> table 200
+        v
+xray0 -> Xray outbound
 ```
 
-The internal VRF and veth loop make the kernel re-enter the inbound network
-path. Without them, Linux could use a local-route shortcut and Hev would connect
-through the container's regular default route, bypassing Xray. The Compose
-settings `accept_local` and `*_l3mdev_accept` are required for this loop.
+Xray's own upstream sockets keep using the normal main routing table. This
+prevents the proxy connection from being routed back into its own TUN interface.
 
-Replies to the SOCKS client are excluded from the injection rule. Only
-connections initiated by Hev toward remote destinations, including its DNS
-queries, enter the Xray path.
+### TPROXY SOCKS path
 
-## Component versions
+```text
+SOCKS5 client -> HevSocks5Server :1080
+        |
+        | UID mark 0x2 -> policy table 200
+        v
+internal VRF/veth loop
+        |
+        | TPROXY mark 0x1 -> policy table 100
+        v
+Xray dokodemo-door :12345 -> Xray outbound
+```
 
-- Xray Core `26.7.28`, copied from the digest-pinned upstream multi-platform
-  image.
-- HevSocks5Server `2.13.1`, built statically from a release tarball after an
-  SHA-256 verification.
+The VRF and veth pair exist only inside the container. They are not Docker
+networks, VLANs, or host-side interfaces.
+
+## Included software
+
+- Xray Core `26.7.28` from the digest-pinned upstream image;
+- HevSocks5Server `2.13.1`, built statically from a checksum-verified release;
 - Alpine `3.24`, pinned by multi-platform manifest digest.
 
-Update a component version together with its digest or checksum, then verify all
-supported architectures.
+## Create the Xray configuration
 
-## Quick start
+The image reads `/etc/xray/config.json`. The repository includes a host-side
+generator for one `vless://` share URI. Python 3.10 or newer is required only on
+the machine generating the file.
 
-1. Create two ordinary user-defined Docker bridge networks, or reuse existing
-   networks, for the transit side and the Xray underlay side.
-2. In `examples`, copy `.env.example` to `.env` and replace every example
-   network name, address, and gateway with values from your deployment.
-3. Generate `config/config.json` from a VLESS share URI, or copy and edit the
-   example configuration manually, as described below.
-4. Start the Compose project. The Xray configuration is mounted read-only at
-   `/etc/xray/config.json`.
+TPROXY configuration:
 
-Containers on the transit network can route directly to the gateway IP. To use
-SOCKS5 from outside the Docker host, publish or forward the SOCKS TCP port and
-UDP relay range.
-
-The underlay network must provide the container's default route. The Compose
-example sets `gw_priority` for this. Interface names are detected automatically:
-the default-route interface is the underlay, and the other IPv4 interface is
-the transit side. Set `INBOUND_INTERFACE` or `OUTBOUND_INTERFACE` only when the
-container has more than two external interfaces or detection is ambiguous.
-
-## Xray connection configuration
-
-Xray uses a JSON configuration rather than a `vless://...` URI directly. This
-repository includes a host-side generator that converts one share URI into the
-complete gateway configuration, including the TPROXY inbound and routing rule.
-The generator is a development tool and is not included in the runtime image.
-It uses only the Python 3.10+ standard library.
-
-Save one VLESS share URI as the only non-empty line in `vless-link.txt`, then run
-from the repository root:
-
-```sh
+```bash
 python3 tools/vless_to_config.py \
   --uri-file ./vless-link.txt \
-  --output examples/config/config.json
+  --routing-mode tproxy \
+  --output ./config/config.json
 ```
 
-On Windows PowerShell, use:
+Native TUN configuration:
+
+```bash
+python3 tools/vless_to_config.py \
+  --uri-file ./vless-link.txt \
+  --routing-mode tun \
+  --tun-interface xray0 \
+  --tun-mtu 1400 \
+  --output ./config/config.json
+```
+
+PowerShell uses the same options:
 
 ```powershell
 python .\tools\vless_to_config.py `
   --uri-file .\vless-link.txt `
-  --output .\examples\config\config.json
+  --routing-mode tun `
+  --output .\config\config.json
 ```
 
-The input can also be read from a pipe with `--stdin`. `--uri` is available for
-quick tests, but it may save the entire URI in shell history. Use `--force` to
-replace an existing output file. The generator does not echo the URI or its
-credentials; avoid `--output -` unless deliberately printing the configuration
-to standard output.
+The generator refuses to overwrite a file unless `--force` is supplied. Avoid
+`--uri` because command-line arguments can be retained in shell history. The
+share URI, generated JSON, UUID, REALITY parameters, and SOCKS credentials must
+not be committed.
 
-The generated file supports VLESS over RAW (`type=tcp`), WebSocket, gRPC
-`gun`/`multi`, HTTPUpgrade, XHTTP, and mKCP, with `none`, TLS, or compatible
-REALITY transport security. Current `fm` finalmask JSON is supported; removed
-mKCP `seed` and non-empty `headerType` settings are rejected. Duplicate,
-unknown, or incompatible parameters are also rejected rather than silently
-producing a configuration that connects differently from the share URI. Legacy
-`type=http` and gRPC `mode=guna` require manual configuration.
+Manual configuration is also supported; start with
+[`examples/config/config.example.json`](examples/config/config.example.json).
 
-The mapping follows the current
-[Xray VLESS share URI proposal](https://github.com/XTLS/Xray-core/discussions/716)
-and [transport configuration](https://github.com/XTLS/Xray-docs-next/blob/main/docs/en/config/transport.md).
+### Reuse an existing TPROXY config in TUN mode
 
-Important current field mappings are:
+When `ROUTING_MODE=tun` is selected and the mounted config contains a TPROXY
+`dokodemo-door` inbound, the entrypoint converts that inbound to TUN in an
+ephemeral file under `/run`. The mounted config remains unchanged. Its inbound
+tag is preserved, so existing routing rules continue to match.
 
-| VLESS URI component | Generated `config.json` field |
-|---|---|
-| `vless://UUID@...` | `settings.vnext[0].users[0].id` |
-| host name or IP after `@` | `settings.vnext[0].address` |
-| port after the server name | `settings.vnext[0].port` |
-| `flow` | `settings.vnext[0].users[0].flow` |
-| `type` | `streamSettings.method` |
-| `security` | `streamSettings.security` |
-| `sni` | TLS/REALITY `serverName` |
-| `fp` | TLS/REALITY `fingerprint` |
-| `pbk` | `realitySettings.password` |
-| `sid` | `realitySettings.shortId` |
-| `pqv` | `realitySettings.mldsa65Verify` |
-| `spx` | `realitySettings.spiderX` |
+If the mounted config already has a TUN inbound, it is used as-is. Its interface
+name must match `TUN_INTERFACE`.
 
-For a manual configuration, copy
-[`examples/config/config.example.json`](examples/config/config.example.json) to
-`examples/config/config.json` and replace the placeholders. Keep the
-`dokodemo-door` TPROXY inbound on port `12345` unless `TPROXY_PORT` is changed
-to the same value. The working configuration and common VLESS-link filenames
-are ignored by Git because they contain credentials and connection parameters.
+## Docker deployment
 
-Set the host-side configuration path in `.env`:
+Start from [`examples/compose.yaml`](examples/compose.yaml) for the default
+TPROXY mode. It expects separate inbound and outbound Docker networks so the
+container can be used as a routed next hop.
 
-```dotenv
-XRAY_CONFIG_FILE=./config/config.json
+For TUN mode, add the TUN device and select the mode:
+
+```yaml
+services:
+  gateway:
+    image: killdns/xray-socks5-router:0.2.0
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+    environment:
+      ROUTING_MODE: tun
+      TUN_INTERFACE: xray0
+      TUN_GATEWAY: 198.18.0.1/30
+      TUN_MTU: "1400"
+      SOCKS_ALLOW_NO_AUTH: "1"
+    volumes:
+      - ./config/config.json:/etc/xray/config.json:ro
 ```
 
-Validate the file before starting the gateway:
+On RouterOS, use `ROUTING_MODE=tun` in the container envlist. The container must
+see `/dev/net/tun`; RouterOS 7.23 provides it to containers on supported
+hardware. TPROXY mode is not expected to work where the RouterOS kernel omits
+the TPROXY netfilter target.
 
-```sh
-docker run --rm \
-  --mount type=bind,src="$PWD/config/config.json",dst=/etc/xray/config.json,readonly \
-  --entrypoint xray \
-  killdns/xray-socks5-router:0.1.0 \
-  run -test -config /etc/xray/config.json
-```
+## Network configuration
 
-A valid configuration exits with status `0`. Normal container startup performs
-the same validation before applying any routing or firewall rules.
+The entrypoint detects interfaces when possible:
 
-## Environment variables
+- the interface carrying the original default route becomes the outbound;
+- one other global IPv4 interface becomes the inbound;
+- with one interface, it is used for both directions.
+
+Set `INBOUND_INTERFACE` and `OUTBOUND_INTERFACE` explicitly when the container
+has more than two candidate interfaces or when deterministic naming is needed.
+Use `RETURN_CIDRS` with `INBOUND_GATEWAY` for client networks that are not
+directly connected to the container.
+
+`LOCAL_BYPASS_CIDRS` is routed directly through the outbound gateway. Connected
+routes on the inbound interface are also kept outside Xray so local services,
+SOCKS clients, and return traffic remain reachable.
+
+## Configuration reference
+
+### Common routing
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `XRAY_CONFIG` | `/etc/xray/config.json` | Configuration path inside the container |
-| `INBOUND_INTERFACE` | auto-detected | Non-default IPv4 interface receiving routed client traffic |
-| `INBOUND_GATEWAY` | empty | Required only when `RETURN_CIDRS` is set |
-| `OUTBOUND_INTERFACE` | auto-detected | Xray underlay interface |
-| `OUTBOUND_GATEWAY` | auto-detected | Regular container default gateway |
-| `RETURN_CIDRS` | empty | Comma-separated networks returned through the inbound interface |
-| `LOCAL_BYPASS_CIDRS` | reserved and private ranges | Destinations that bypass TPROXY |
-| `TPROXY_PORT` | `12345` | Port of the Xray TPROXY inbound |
-| `ENABLE_SOCKS` | `1` | Start HevSocks5Server |
-| `SOCKS_BIND` | `0.0.0.0` | SOCKS5 listening address |
-| `SOCKS_PORT` | `1080` | SOCKS5 TCP port |
-| `SOCKS_UDP_PORT_MIN/MAX` | `20000` / `20999` | UDP relay port range |
-| `SOCKS_UDP_ADVERTISE_IP` | empty | UDP relay address reported to the client |
-| `SOCKS_DNS_SERVER` | `1.1.1.1` | Resolver used inside the container |
-| `SOCKS_USER/PASSWORD` | empty | Optional SOCKS5 credentials |
-| `SOCKS_ALLOW_NO_AUTH` | `0` | Explicitly allow operation without credentials |
-| `SOCKS_VRF` | `socksvrf` | Internal VRF used to inject SOCKS traffic into TPROXY |
-| `IPTABLES_BIN` | `iptables` | May be changed to `iptables-legacy` |
+| `XRAY_CONFIG` | `/etc/xray/config.json` | Mounted Xray configuration |
+| `ROUTING_MODE` | `tproxy` | `tproxy` or `tun` |
+| `INBOUND_INTERFACE` | auto | Interface receiving routed client traffic |
+| `INBOUND_GATEWAY` | empty | Next hop for `RETURN_CIDRS` |
+| `OUTBOUND_INTERFACE` | default-route interface | Underlay/uplink interface |
+| `OUTBOUND_GATEWAY` | default-route gateway | Underlay gateway |
+| `RETURN_CIDRS` | empty | Comma-separated client networks returned through the inbound gateway |
+| `LOCAL_BYPASS_CIDRS` | reserved/private IPv4 ranges | Destinations routed directly instead of through Xray |
 
-When credentials are not configured, the container deliberately refuses to
-start unless `SOCKS_ALLOW_NO_AUTH=1` is set.
+### TUN mode
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TUN_INTERFACE` | `xray0` | Xray TUN interface name; must match the config |
+| `TUN_GATEWAY` | `198.18.0.1/30` | Address used when converting a TPROXY config |
+| `TUN_MTU` | `1400` | MTU used when converting a TPROXY config |
+| `TUN_TABLE` | `100` | Policy table for routed L3 traffic |
+| `TUN_PRIORITY` | `1000` | Inbound-interface rule priority; must be greater than 200 for RouterOS |
+| `TUN_SOCKS_PRIORITY` | `900` | Hev process-UID rule priority; must be greater than 200 |
+| `TUN_WAIT_SECONDS` | `15` | Time to wait for Xray to create the TUN interface |
+
+### TPROXY mode
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TPROXY_PORT` | `12345` | Port of the Xray transparent inbound |
+| `TPROXY_MARK` | `0x1/0x1` | Transparent-interception mark |
+| `TPROXY_TABLE` | `100` | Transparent-interception policy table |
+| `TPROXY_PRIORITY` | `100` | Transparent-interception rule priority |
+| `IPTABLES_BIN` | `iptables` | iptables frontend; `iptables-legacy` can be selected explicitly |
+
+### SOCKS5
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENABLE_SOCKS` | `1` | Start HevSocks5Server |
+| `SOCKS_BIND` | `0.0.0.0` | TCP and UDP listen address |
+| `SOCKS_PORT` | `1080` | SOCKS5 TCP port |
+| `SOCKS_USER` / `SOCKS_PASSWORD` | empty | Optional credentials; both must be set together |
+| `SOCKS_ALLOW_NO_AUTH` | `0` | Must be `1` to run without credentials |
+| `SOCKS_DNS_SERVER` | `1.1.1.1` | Resolver written to the container's `resolv.conf` |
+| `SOCKS_WORKERS` | `2` | Hev worker count |
+| `SOCKS_LOG_LEVEL` | `warn` | `debug`, `info`, `warn`, or `error` |
+| `SOCKS_UDP_PORT_MIN` / `MAX` | `20000` / `20999` | UDP relay range |
+| `SOCKS_UDP_ADVERTISE_IP` | empty | Client-reachable IPv4 address returned by UDP `ASSOCIATE` |
+
+TPROXY-only advanced VRF/veth variables remain backward compatible. See the
+entrypoint source before overriding them; TUN mode does not use them.
 
 ## Build and test
 
-Build for the native platform:
-
-```sh
-docker build -t xray-socks5-router:dev .
-```
-
-Verify all supported platforms:
-
-```sh
-docker buildx build \
-  --platform linux/amd64,linux/arm64,linux/arm/v7 \
-  --pull \
-  .
-```
-
-Run the native TCP and UDP integration test:
-
-```sh
+```bash
+docker build -t xray-socks5-router:test .
 ./tests/smoke.sh
 ```
 
-## Security
+Build every supported architecture:
 
-- The container requires `NET_ADMIN` and `NET_RAW`, but not privileged mode.
-- Mount the Xray configuration read-only and never commit it to the repository.
-- Never expose an unauthenticated SOCKS listener to an untrusted network.
-- The Dockerfile pins upstream image manifests and verifies the Hev source
-  archive checksum.
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64,linux/arm/v7 \
+  -t killdns/xray-socks5-router:0.2.0 \
+  .
+```
 
-## Upstream projects
+The smoke test verifies TPROXY and TUN L3 TCP/UDP plus SOCKS5 TCP/UDP.
 
-- [XTLS/Xray-core](https://github.com/XTLS/Xray-core)
-- [heiher/hev-socks5-server](https://github.com/heiher/hev-socks5-server)
+## Security and limitations
+
+- Mount the Xray configuration read-only.
+- Never expose unauthenticated SOCKS to an untrusted network.
+- Publish or forward the SOCKS TCP port and the complete UDP relay range only
+  when external SOCKS access is required.
+- TUN is fail-closed for traffic selected by its policy table: if Xray stops,
+  that traffic stops as well.
+- Xray TUN ICMP echo indicates that the TUN stack accepted the packet; it is not
+  proof that the remote host answered.
+- This release configures IPv4 routing. An Xray outbound may use IPv6 internally,
+  but IPv6 transit routing is outside the current scope.
+
+See the upstream [Xray TUN documentation](https://github.com/XTLS/Xray-core/blob/v26.7.28/proxy/tun/README.md)
+for protocol behavior and limitations.

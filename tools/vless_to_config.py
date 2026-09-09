@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from urllib.parse import parse_qsl, unquote, urlsplit
@@ -82,6 +83,34 @@ SECURITY_PARAMETERS = {
 
 class ConfigError(ValueError):
     """A safe, user-facing validation error that never contains the URI."""
+
+
+def _parse_tun_mtu(value: str | int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("TUN MTU must be an integer") from exc
+    if not 576 <= parsed <= 65535:
+        raise ConfigError("TUN MTU must be between 576 and 65535")
+    return parsed
+
+
+def _parse_tun_gateway(value: str) -> str:
+    try:
+        gateway = ipaddress.ip_interface(value)
+    except ValueError as exc:
+        raise ConfigError("TUN gateway must be a valid IPv4 interface prefix") from exc
+    if gateway.version != 4:
+        raise ConfigError("TUN gateway must be an IPv4 interface prefix")
+    return str(gateway)
+
+
+def _validate_tun_interface(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", value):
+        raise ConfigError(
+            "TUN interface must be 1-15 letters, digits, dots, underscores, or hyphens"
+        )
+    return value
 
 
 def _parse_port(value: str, field: str) -> int:
@@ -339,7 +368,13 @@ def _configure_security(
 
 
 def build_config(
-    uri: str, tproxy_port: int = 12345, log_level: str = "warning"
+    uri: str,
+    tproxy_port: int = 12345,
+    log_level: str = "warning",
+    routing_mode: str = "tproxy",
+    tun_interface: str = "xray0",
+    tun_mtu: int = 1400,
+    tun_gateway: str = "198.18.0.1/30",
 ) -> dict:
     """Convert one VLESS share URI to a complete gateway config."""
     if not uri or any(char in uri for char in "\r\n"):
@@ -395,23 +430,43 @@ def build_config(
     security = _configure_security(stream, query, method, host)
     _validate_parameter_context(query, method, security)
 
+    if routing_mode == "tproxy":
+        inbound_tag = "tproxy-in"
+        inbound = {
+            "tag": inbound_tag,
+            "listen": "0.0.0.0",
+            "port": tproxy_port,
+            "protocol": "dokodemo-door",
+            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": True,
+            },
+            "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+        }
+    elif routing_mode == "tun":
+        inbound_tag = "tun-in"
+        inbound = {
+            "tag": inbound_tag,
+            "protocol": "tun",
+            "settings": {
+                "name": _validate_tun_interface(tun_interface),
+                "mtu": _parse_tun_mtu(tun_mtu),
+                "gateway": [_parse_tun_gateway(tun_gateway)],
+            },
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": True,
+            },
+        }
+    else:
+        raise ConfigError("routing mode must be 'tproxy' or 'tun'")
+
     return {
         "log": {"loglevel": log_level},
-        "inbounds": [
-            {
-                "tag": "tproxy-in",
-                "listen": "0.0.0.0",
-                "port": tproxy_port,
-                "protocol": "dokodemo-door",
-                "settings": {"network": "tcp,udp", "followRedirect": True},
-                "sniffing": {
-                    "enabled": True,
-                    "destOverride": ["http", "tls", "quic"],
-                    "routeOnly": True,
-                },
-                "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
-            }
-        ],
+        "inbounds": [inbound],
         "outbounds": [
             {
                 "tag": "proxy",
@@ -425,7 +480,7 @@ def build_config(
             "rules": [
                 {
                     "type": "field",
-                    "inboundTag": ["tproxy-in"],
+                    "inboundTag": [inbound_tag],
                     "outboundTag": "proxy",
                 }
             ],
@@ -511,6 +566,33 @@ def _argument_parser() -> argparse.ArgumentParser:
         default=12345,
         metavar="PORT",
     )
+    parser.add_argument(
+        "--routing-mode",
+        choices=("tproxy", "tun"),
+        default="tproxy",
+        help="gateway interception mode (default: tproxy)",
+    )
+    parser.add_argument(
+        "--tun-interface",
+        type=_validate_tun_interface,
+        default="xray0",
+        metavar="NAME",
+        help="TUN interface name for --routing-mode tun (default: xray0)",
+    )
+    parser.add_argument(
+        "--tun-mtu",
+        type=_parse_tun_mtu,
+        default=1400,
+        metavar="MTU",
+        help="TUN MTU for --routing-mode tun (default: 1400)",
+    )
+    parser.add_argument(
+        "--tun-gateway",
+        type=_parse_tun_gateway,
+        default="198.18.0.1/30",
+        metavar="PREFIX",
+        help="IPv4 address/prefix assigned to TUN (default: 198.18.0.1/30)",
+    )
     parser.add_argument("--log-level", default="warning", metavar="LEVEL")
     return parser
 
@@ -520,7 +602,15 @@ def main() -> int:
     args = parser.parse_args()
     try:
         uri = _read_uri(args)
-        config = build_config(uri, args.tproxy_port, args.log_level)
+        config = build_config(
+            uri,
+            args.tproxy_port,
+            args.log_level,
+            args.routing_mode,
+            args.tun_interface,
+            args.tun_mtu,
+            args.tun_gateway,
+        )
         _write_config(config, args.output, args.force)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -2,7 +2,7 @@ name: xray-socks5-router
 
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.1.0
+    image: ${IMAGE:-killdns/xray-socks5-router}:${VERSION:-0.2.0}
     # Use this instead of image while developing locally:
     # build: ..
     container_name: xray-socks5-router
@@ -20,6 +20,7 @@ services:
       net.ipv4.tcp_l3mdev_accept: "1"
       net.ipv4.udp_l3mdev_accept: "1"
     environment:
+      ROUTING_MODE: ${ROUTING_MODE:-tproxy}
       INBOUND_INTERFACE: ${INBOUND_INTERFACE:-}
       INBOUND_GATEWAY: ${INBOUND_GATEWAY:-}
       OUTBOUND_INTERFACE: ${OUTBOUND_INTERFACE:-}
