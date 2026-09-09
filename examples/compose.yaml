@@ -1,0 +1,51 @@
+name: xray-socks5-router
+
+services:
+  gateway:
+    image: killdns/xray-socks5-router:0.1.0
+    # Use this instead of image while developing locally:
+    # build: ..
+    container_name: xray-socks5-router
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+      net.ipv4.conf.all.accept_local: "1"
+      net.ipv4.tcp_l3mdev_accept: "1"
+      net.ipv4.udp_l3mdev_accept: "1"
+    environment:
+      INBOUND_INTERFACE: ${INBOUND_INTERFACE:-}
+      INBOUND_GATEWAY: ${INBOUND_GATEWAY:-}
+      OUTBOUND_INTERFACE: ${OUTBOUND_INTERFACE:-}
+      OUTBOUND_GATEWAY: ${OUTBOUND_GATEWAY:-}
+      RETURN_CIDRS: ${RETURN_CIDRS:-}
+      ENABLE_SOCKS: "1"
+      SOCKS_BIND: ${SOCKS_BIND:-0.0.0.0}
+      SOCKS_PORT: "1080"
+      SOCKS_ALLOW_NO_AUTH: "1"
+      SOCKS_DNS_SERVER: 1.1.1.1
+      SOCKS_UDP_PORT_MIN: "20000"
+      SOCKS_UDP_PORT_MAX: "20999"
+      SOCKS_UDP_ADVERTISE_IP: ${SOCKS_UDP_ADVERTISE_IP:-}
+    volumes:
+      - ${XRAY_CONFIG_FILE:-./config/config.json}:/etc/xray/config.json:ro
+    networks:
+      underlay_out:
+        ipv4_address: ${OUTBOUND_ADDRESS}
+        gw_priority: 1
+      transit_in:
+        ipv4_address: ${INBOUND_ADDRESS}
+
+networks:
+  transit_in:
+    name: ${INBOUND_NETWORK}
+    external: true
+  underlay_out:
+    name: ${OUTBOUND_NETWORK}
+    external: true

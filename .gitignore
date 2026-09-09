@@ -1,0 +1,10 @@
+dist/
+__pycache__/
+*.py[cod]
+.env
+config/config.json
+examples/config/config.json
+vless-link.txt
+vless-link-*.txt
+*.tar
+*.tar.gz
