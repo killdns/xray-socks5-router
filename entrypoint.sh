@@ -30,6 +30,7 @@ is_interface_name() {
 }
 
 XRAY_CONFIG="${XRAY_CONFIG:-/etc/xray/config.json}"
+VLESS_URI="${VLESS_URI-}"
 ROUTING_MODE="${ROUTING_MODE:-tproxy}"
 INBOUND_INTERFACE="${INBOUND_INTERFACE:-}"
 INBOUND_GATEWAY="${INBOUND_GATEWAY:-}"
@@ -82,7 +83,6 @@ XRAY_PID=""
 SOCKS_PID=""
 
 [ "$(id -u)" -eq 0 ] || fail "container must run as root"
-[ -s "$XRAY_CONFIG" ] || fail "Xray config is missing or empty: $XRAY_CONFIG"
 
 case "$ROUTING_MODE" in
   tproxy)
@@ -175,6 +175,33 @@ if [ "$ENABLE_SOCKS" = "1" ]; then
     *) fail "SOCKS_LOG_LEVEL must be debug, info, warn, or error" ;;
   esac
 fi
+
+generate_xray_config_from_vless_uri() {
+  [ -n "$VLESS_URI" ] || return 0
+
+  generated_config=/run/xray-socks5-router/xray-from-vless.json
+  log "Generating ephemeral Xray config from VLESS_URI"
+  if ! printf '%s\n' "$VLESS_URI" | \
+    python3 /usr/local/libexec/xray-socks5-router/vless_to_config.py \
+      --stdin \
+      --routing-mode "$ROUTING_MODE" \
+      --tproxy-port "$TPROXY_PORT" \
+      --tun-interface "$TUN_INTERFACE" \
+      --tun-mtu "$TUN_MTU" \
+      --tun-gateway "$TUN_GATEWAY" \
+      --output "$generated_config" \
+      --force; then
+    unset VLESS_URI
+    fail "failed to generate Xray config from VLESS_URI"
+  fi
+
+  unset VLESS_URI
+  XRAY_CONFIG="$generated_config"
+  log "Using the ephemeral Xray config generated from VLESS_URI"
+}
+
+generate_xray_config_from_vless_uri
+[ -s "$XRAY_CONFIG" ] || fail "Xray config is missing or empty: $XRAY_CONFIG"
 
 /usr/local/bin/xray run -test -config "$XRAY_CONFIG"
 

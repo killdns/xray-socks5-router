@@ -45,6 +45,7 @@ RUN apk add --no-cache \
       iptables-legacy \
       jq \
       libcap-utils \
+      python3 \
       su-exec \
       tini \
     && addgroup -S socks \
@@ -58,6 +59,7 @@ COPY --from=hev-socks5-build /tmp/hev-socks5-server/bin/hev-socks5-server /usr/l
 COPY --from=hev-socks5-build /tmp/hev-socks5-server/LICENSE /usr/share/licenses/hev-socks5-server/LICENSE
 COPY --chmod=0755 entrypoint.sh /usr/local/sbin/xray-socks5-router-entrypoint
 COPY --chmod=0755 healthcheck.sh /usr/local/sbin/xray-socks5-router-healthcheck
+COPY --chmod=0755 tools/vless_to_config.py /usr/local/libexec/xray-socks5-router/vless_to_config.py
 
 EXPOSE 1080/tcp 20000-20999/udp
 

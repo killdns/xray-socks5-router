@@ -2,3 +2,5 @@
 !Dockerfile
 !entrypoint.sh
 !healthcheck.sh
+!tools/
+!tools/vless_to_config.py

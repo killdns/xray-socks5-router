@@ -26,9 +26,10 @@ OUTBOUND_NETWORK="xray-socks5-router-smoke-out"
 ROUTER="xray-socks5-router-smoke-router"
 TARGET="xray-socks5-router-smoke-target"
 CLIENT="xray-socks5-router-smoke-client"
+URI_ROUTER="xray-socks5-router-smoke-uri-router"
 
 cleanup() {
-  docker rm -f "$ROUTER" "$TARGET" "$CLIENT" >/dev/null 2>&1 || true
+  docker rm -f "$ROUTER" "$TARGET" "$CLIENT" "$URI_ROUTER" >/dev/null 2>&1 || true
   docker network rm "$INBOUND_NETWORK" "$OUTBOUND_NETWORK" >/dev/null 2>&1 || true
 }
 
@@ -57,11 +58,67 @@ if [ "$SKIP_BUILD" != "1" ]; then
   docker build --pull --tag "$IMAGE" .
 fi
 docker run --rm --entrypoint sh "$IMAGE" -c \
-  'xray version && test -x /usr/local/bin/hev-socks5-server'
+  'xray version && test -x /usr/local/bin/hev-socks5-server && test -x /usr/local/libexec/xray-socks5-router/vless_to_config.py'
 docker run --rm \
   --entrypoint xray \
   -v "$TUN_CONFIG_PATH:/etc/xray/config.json:ro" \
   "$IMAGE" run -test -config /etc/xray/config.json
+
+test_vless_uuid=b0dd64e4-0fbd-4038-9139-d1f32a68a0dc
+test_vless_uri="vless://${test_vless_uuid}@example.com:443?type=tcp&security=tls&sni=example.com&fp=chrome"
+docker run -d \
+  --name "$URI_ROUTER" \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  --security-opt no-new-privileges:true \
+  -e ENABLE_SOCKS=0 \
+  -e VLESS_URI="$test_vless_uri" \
+  "$IMAGE" >/dev/null
+
+attempt=0
+until [ "$(docker inspect --format '{{.State.Health.Status}}' "$URI_ROUTER")" = "healthy" ]; do
+  attempt=$((attempt + 1))
+  if [ "$(docker inspect --format '{{.State.Status}}' "$URI_ROUTER")" = "exited" ] || \
+    [ "$attempt" -ge 30 ]; then
+    docker logs "$URI_ROUTER"
+    exit 1
+  fi
+  sleep 1
+done
+
+docker exec "$URI_ROUTER" jq -e \
+  --arg uuid "$test_vless_uuid" \
+  '.outbounds[0].protocol == "vless" and
+   .outbounds[0].settings.vnext[0].address == "example.com" and
+   .outbounds[0].settings.vnext[0].port == 443 and
+   .outbounds[0].settings.vnext[0].users[0].id == $uuid' \
+  /run/xray-socks5-router/xray-runtime.json >/dev/null
+docker exec "$URI_ROUTER" sh -c \
+  'test "$(stat -c %a /run/xray-socks5-router/xray-from-vless.json)" = 600'
+xray_pid="$(docker exec "$URI_ROUTER" cat /run/xray-socks5-router/xray.pid)"
+xray_environment="$(docker exec --privileged "$URI_ROUTER" sh -c \
+  'tr "\000" "\n" < "/proc/${1}/environ"' sh "$xray_pid")"
+if printf '%s\n' "$xray_environment" | grep -q '^VLESS_URI='; then
+  printf '%s\n' "VLESS_URI leaked into the Xray process environment" >&2
+  exit 1
+fi
+if docker logs "$URI_ROUTER" 2>&1 | grep -F "$test_vless_uuid" >/dev/null; then
+  printf '%s\n' "VLESS_URI leaked into container logs" >&2
+  exit 1
+fi
+docker rm -f "$URI_ROUTER" >/dev/null
+
+invalid_uri_log="$(docker run --rm \
+  -e ENABLE_SOCKS=0 \
+  -e VLESS_URI='vless://not-a-uuid@example.com:443' \
+  "$IMAGE" 2>&1 || true)"
+printf '%s\n' "$invalid_uri_log" | \
+  grep -F 'failed to generate Xray config from VLESS_URI' >/dev/null
+if printf '%s\n' "$invalid_uri_log" | grep -F 'not-a-uuid' >/dev/null; then
+  printf '%s\n' "Invalid VLESS_URI leaked into container logs" >&2
+  exit 1
+fi
+
 docker pull curlimages/curl:8.16.0 >/dev/null
 docker pull python:3.13-alpine >/dev/null
 
