@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-09-11
+
+- Added runtime `VLESS_URI` configuration generation inside the container.
+- Kept mounted `config.json` support unchanged; `VLESS_URI` takes precedence when set.
+- Passed URI data to the embedded generator through stdin and removed it from the
+  child-process environment before starting Xray.
+- Added regression coverage for generated configuration, restrictive file mode,
+  invalid-URI handling, and log/environment leak prevention.
+
 ## 0.2.1 - 2026-09-09
 
 - Routed container-local IPv4 traffic through Xray in TUN mode while excluding
