@@ -70,8 +70,45 @@ VRF/veth — внутренняя деталь только режима `tproxy
 
 ## Конфигурация подключения
 
-Контейнер читает `/etc/xray/config.json`. Генератор полного конфига из одной
-ссылки `vless://` требует Python 3.10+ только на машине, где создаётся файл.
+Контейнер может использовать смонтированный `/etc/xray/config.json` либо одну
+ссылку `vless://` из переменной `VLESS_URI`.
+
+### Генерация при запуске контейнера
+
+Если задана `VLESS_URI`, entrypoint перед запуском Xray создаёт временный конфиг
+под `/run`. Mount с `config.json` в этом режиме не нужен. В сгенерированный
+конфиг передаются текущие `ROUTING_MODE`, `TPROXY_PORT`, `TUN_INTERFACE`,
+`TUN_GATEWAY` и `TUN_MTU`.
+
+```yaml
+services:
+  gateway:
+    image: killdns/xray-socks5-router:0.3.0
+    environment:
+      VLESS_URI: ${VLESS_URI}
+      ROUTING_MODE: tun
+      SOCKS_ALLOW_NO_AUTH: "1"
+```
+
+Если одновременно есть файл и `VLESS_URI`, приоритет получает переменная.
+Ссылка передаётся встроенному генератору через stdin, не выводится в лог и
+удаляется из окружения дочерних процессов до запуска Xray.
+
+Но ENV — не хранилище секретов: администратор Docker увидит значение через
+inspect, а RouterOS хранит его в envlist. Держите ссылку в игнорируемом `.env`
+или используйте read-only mount с `config.json`, если такая видимость неприемлема.
+
+Для RouterOS:
+
+```routeros
+/container/envs/add list=xray-router key=VLESS_URI value="vless://..."
+/container/envs/add list=xray-router key=ROUTING_MODE value=tun
+```
+
+### Генерация файла на хосте
+
+Прежний генератор в `tools/` остаётся доступен. Для этого варианта Python 3.10+
+требуется только на машине, где создаётся файл.
 
 ```bash
 # TPROXY
@@ -111,7 +148,7 @@ TUN-конфиг используется как есть; имя его инт�
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.1
+    image: killdns/xray-socks5-router:0.3.0
     cap_add: [NET_ADMIN, NET_RAW]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -143,6 +180,7 @@ Entrypoint считает интерфейс исходного default route в
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
 | `XRAY_CONFIG` | `/etc/xray/config.json` | Конфиг Xray |
+| `VLESS_URI` | пусто | Создать временный конфиг из одной VLESS-ссылки; имеет приоритет над `XRAY_CONFIG` |
 | `ROUTING_MODE` | `tproxy` | `tproxy` или `tun` |
 | `INBOUND_INTERFACE` | автоматически | Интерфейс транзитного трафика |
 | `INBOUND_GATEWAY` | пусто | Next hop для `RETURN_CIDRS` |
@@ -196,7 +234,7 @@ docker build -t xray-socks5-router:test .
 ./tests/smoke.sh
 docker buildx build \
   --platform linux/amd64,linux/arm64,linux/arm/v7 \
-  -t killdns/xray-socks5-router:0.2.1 .
+  -t killdns/xray-socks5-router:0.3.0 .
 ```
 
 Smoke test проверяет локальный TUN-трафик контейнера, L3 TCP/UDP и SOCKS5

@@ -55,7 +55,7 @@ and TUN mode does not create it.
 ## Quick start
 
 ```bash
-docker pull killdns/xray-socks5-router:0.2.1
+docker pull killdns/xray-socks5-router:0.3.0
 ```
 
 TUN example:
@@ -63,7 +63,7 @@ TUN example:
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.1
+    image: killdns/xray-socks5-router:0.3.0
     cap_add: [NET_ADMIN, NET_RAW]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -72,16 +72,35 @@ services:
       net.ipv4.conf.all.rp_filter: "0"
       net.ipv4.conf.default.rp_filter: "0"
     environment:
+      VLESS_URI: ${VLESS_URI}
       ROUTING_MODE: tun
       SOCKS_ALLOW_NO_AUTH: "1"
-    volumes:
-      - ./config/config.json:/etc/xray/config.json:ro
 ```
 
 On RouterOS, set `ROUTING_MODE=tun` in the envlist and confirm that the
 container sees `/dev/net/tun`.
 
-## Generate `config.json`
+## Connection configuration
+
+Set `VLESS_URI` to generate an ephemeral Xray configuration automatically at
+container startup. The selected routing-mode and TUN/TPROXY environment values
+are applied to the generated config. `VLESS_URI` takes precedence when a mounted
+`XRAY_CONFIG` is also present.
+
+The URI is passed to the embedded generator through stdin, is not logged, and is
+removed from Xray's child-process environment. It is still visible to Docker
+administrators through container inspection and remains stored in a RouterOS
+envlist. Use a read-only mounted `config.json` instead when that exposure is not
+acceptable.
+
+RouterOS example:
+
+```routeros
+/container/envs/add list=xray-router key=VLESS_URI value="vless://..."
+/container/envs/add list=xray-router key=ROUTING_MODE value=tun
+```
+
+The host-side generator remains available when a file is preferred.
 
 The GitHub repository includes a Python 3.10+ generator for one `vless://` URI:
 
@@ -105,6 +124,7 @@ Never commit the URI or generated configuration.
 | Variable | Default | Purpose |
 |---|---|---|
 | `XRAY_CONFIG` | `/etc/xray/config.json` | Mounted Xray configuration |
+| `VLESS_URI` | empty | Generate an ephemeral config from one VLESS share URI; takes precedence over `XRAY_CONFIG` |
 | `ROUTING_MODE` | `tproxy` | `tproxy` or `tun` |
 | `INBOUND_INTERFACE` | auto | Interface receiving routed traffic |
 | `INBOUND_GATEWAY` | empty | Next hop for `RETURN_CIDRS` |

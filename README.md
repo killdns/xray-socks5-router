@@ -90,9 +90,46 @@ networks, VLANs, or host-side interfaces.
 
 ## Create the Xray configuration
 
-The image reads `/etc/xray/config.json`. The repository includes a host-side
-generator for one `vless://` share URI. Python 3.10 or newer is required only on
-the machine generating the file.
+The image accepts either a mounted `/etc/xray/config.json` or one `vless://`
+share URI in `VLESS_URI`.
+
+### Generate at container startup
+
+Set `VLESS_URI` and the entrypoint will generate an ephemeral configuration
+under `/run` before validating and starting Xray. No configuration volume is
+required. The selected `ROUTING_MODE`, `TPROXY_PORT`, `TUN_INTERFACE`,
+`TUN_GATEWAY`, and `TUN_MTU` values are applied to the generated configuration.
+
+```yaml
+services:
+  gateway:
+    image: killdns/xray-socks5-router:0.3.0
+    environment:
+      VLESS_URI: ${VLESS_URI}
+      ROUTING_MODE: tun
+      SOCKS_ALLOW_NO_AUTH: "1"
+```
+
+When both sources are present, `VLESS_URI` takes precedence over `XRAY_CONFIG`.
+The URI is passed to the embedded generator through stdin, is never written to
+logs, and is removed from the child-process environment before Xray starts.
+
+Environment variables are not a secret store: Docker administrators can inspect
+them, and RouterOS keeps them in the envlist. Keep the URI in an ignored `.env`
+file, or continue using a read-only mounted `config.json` when this exposure is
+not acceptable.
+
+RouterOS example:
+
+```routeros
+/container/envs/add list=xray-router key=VLESS_URI value="vless://..."
+/container/envs/add list=xray-router key=ROUTING_MODE value=tun
+```
+
+### Generate on the host
+
+The same generator remains available in `tools/`. Python 3.10 or newer is
+required only on the host when using this workflow.
 
 TPROXY configuration:
 
@@ -152,7 +189,7 @@ For TUN mode, add the TUN device and select the mode:
 ```yaml
 services:
   gateway:
-    image: killdns/xray-socks5-router:0.2.1
+    image: killdns/xray-socks5-router:0.3.0
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -201,6 +238,7 @@ SOCKS clients, and return traffic remain reachable.
 | Variable | Default | Purpose |
 |---|---|---|
 | `XRAY_CONFIG` | `/etc/xray/config.json` | Mounted Xray configuration |
+| `VLESS_URI` | empty | Generate an ephemeral Xray configuration from one VLESS share URI; takes precedence over `XRAY_CONFIG` |
 | `ROUTING_MODE` | `tproxy` | `tproxy` or `tun` |
 | `INBOUND_INTERFACE` | auto | Interface receiving routed client traffic |
 | `INBOUND_GATEWAY` | empty | Next hop for `RETURN_CIDRS` |
@@ -262,7 +300,7 @@ Build every supported architecture:
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64,linux/arm/v7 \
-  -t killdns/xray-socks5-router:0.2.1 \
+  -t killdns/xray-socks5-router:0.3.0 \
   .
 ```
 
